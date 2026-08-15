@@ -1,0 +1,6 @@
+# Phase 1 (blackboard + protocol) has no external deps beyond stdlib.
+# Phase 2+ (real knights) shells out to Codex CLI (`codex exec`).
+
+# --- dev ---
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
