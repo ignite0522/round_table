@@ -1,5 +1,8 @@
-# Phase 1 (blackboard + protocol) has no external deps beyond stdlib.
-# Phase 2+ (real knights) shells out to Codex CLI (`codex exec`).
+# Core round-table logic uses the standard library. The GUI requires Flask,
+# while real knights shell out to Codex CLI (`codex exec`).
+
+# --- runtime ---
+Flask>=3.0.0
 
 # --- dev ---
 pytest>=8.0.0

@@ -1,310 +1,172 @@
-# 圆桌骑士 (Round Table)
+# 圆桌骑士（Round Table）
 
-一个基于**黑板架构**的多智能体 CTF 协作求解系统。一群"进攻姿态各异"的骑士围坐圆桌,面对**同一道题**,各自从不同角度进攻,把重要发现放上桌,彼此自由接纳(endorse)或质疑(challenge),直到 flag 出现,Arthur 宣布散会。
+圆桌骑士是一个面向 CTF 场景的多智能体协作求解系统。它不让多个 agent 进行松散对话，而是把五位“进攻姿态”不同的骑士组织到同一张结构化黑板上，在 `Merlin` 的元控制与 `Arthur` 的结果校验下，持续推进同一道题的解题过程。
 
-设计文档见仓库根目录 `DESIGN_圆桌骑士.md`。
+系统的目标不是简单堆叠多个模型实例，而是提升长流程题、多阶段题、混合题上的持续搜索能力、路线切换能力与收敛稳定性，同时保持本地工程可复现、可观测、可操作。
 
-## 项目亮点
+## 摘要
 
-- **Merlin + FunSearch 调度**: Merlin 不只是做去重和防撞路,还把黑板上的高价值路线组织成 FunSearch 风格的候选池,在多条攻击路线之间做选择、重排和持续推进。
-- **黑板式多智能体协作**: 五骑士共享结构化黑板,不是闲聊式多 agent,更利于去重、复盘和把半成品线索滚成完整利用链。
-- **Kali Worker 执行环境**: 骑士可以在预装安全工具、知识库和利用脚本的 Kali 容器里工作,把“会推理”落到“真能动手”。
-- **本地 GUI 控制台**: 支持批量入队、并发调度、人工追加指令、排队置顶和过程日志回看,方便长时间 benchmark 或多题批量跑。
+现实中的 CTF 题目往往不是一次 payload 即可结束。一个稳定的解题系统通常需要同时具备：
 
-## 四条设计铁律
+- 广度侦察与快速试探能力，
+- 对高价值路线的持续深钻能力，
+- 对失败分支的记忆与止损能力，
+- 在出现 exploit primitive 后迅速重组利用链的能力，
+- 以及对 flag 结果的统一校验与收束能力。
 
-1. **黑板是唯一真相源,不是聊天室** —— 骑士只读写结构化条目。
-2. **性格 = 策略先验(旋钮),不是角色扮演台词** —— 避免 5 个换皮 LLM。
-3. **不按题目类别分工,按进攻姿态分** —— 单题全员同目标。
-4. **难点是"卡住怎么办",不是"找到就结束"** —— 这是 Merlin 的价值。
+圆桌骑士围绕这些需求，组合了四个核心要素：
 
-## 架构
+- 结构化黑板作为共享证据面，
+- 姿态互补的五骑士搜索器，
+- 具备 FunSearch 风格路线调度能力的 `Merlin`，
+- 以及负责验证与终止的 `Arthur`。
 
-| 角色 | 组件 | 职责 |
-|---|---|---|
-| Kay | Orchestrator | 发牌、驱动主循环、终止判定 |
-| 圆桌 | Blackboard | 结构化条目的共享真相源 |
-| 5 骑士 | Knight | 按姿态进攻,读写黑板 |
-| Merlin | 元认知层 | 去重、死路检测、digest、防撞路、FunSearch 路线调度 |
-| Arthur | 仲裁 | 验证 flag,宣布散会 |
+当前版本优先强调工程落地：一条命令构建 worker，一条命令启动 GUI 或命令行任务，并为每道题保留独立工作目录、日志、黑板与骑士笔记。
 
-**五骑士(进攻姿态)**:Gawain 工具师 · Percival 走正门 · Mordred 逆向出题人 · Lancelot 单线死磕 · Tristan 侧向缝合。
+## 框架结构图
 
-## Framework
+下图参考 `NanoResearch` Figure 2 的论文插图语言重新设计：顶部展示从题目输入到 Flag 验证的统一流程，左侧刻画五种互补的骑士策略，中部呈现 `Kay`、`Merlin`、`Arthur` 与圆桌协同闭环，右侧归纳系统在覆盖、路线进化和验证收束三个层面的目标输出。
 
-```mermaid
-flowchart LR
-    U["User / GUI Console"] --> K["Kay<br/>Orchestrator"]
-    U --> W["Workspace<br/>logs / board / notes / cache"]
+![圆桌骑士总体框架](docs/assets/round_table_framework_illustrated.png)
 
-    K --> B["Blackboard"]
-    K --> M["Merlin<br/>Meta-control"]
-    K --> A["Arthur<br/>Flag Arbiter"]
-    K --> G["Gawain<br/>工具师"]
-    K --> P["Percival<br/>直给者"]
-    K --> D["Mordred<br/>破坏者"]
-    K --> L["Lancelot<br/>钻探者"]
-    K --> T["Tristan<br/>缝合者"]
+## 核心组成
 
-    G --> B
-    P --> B
-    D --> B
-    L --> B
-    T --> B
+| 组件 | 角色 | 职责 |
+| --- | --- | --- |
+| `Kay` | 总控编排器 | 启动任务、推进 cycle、管理任务生命周期 |
+| `Blackboard` | 共享记忆层 | 记录事实、工件、死路、下一步与候选 flag |
+| `Knights` | 搜索执行体 | 按各自姿态推进解题并发布结构化发现 |
+| `Merlin` | 元控制器 | 去重、打分、改派、控节奏、管理搜索压力 |
+| `Arthur` | 仲裁器 | 校验 flag 候选并控制终止条件 |
 
-    B --> M
-    M --> F["FunSearch Population<br/>islands / elites / candidates"]
-    F --> M
+## 方法概览
 
-    M --> G
-    M --> P
-    M --> D
-    M --> L
-    M --> T
+### 1. 黑板优先，而不是群聊优先
 
-    B --> A
-    A --> K
+系统中的有效发现不会停留在自然语言聊天里，而是会被写成结构化条目。这样做的好处是：
 
-    G -. use .-> X["Kali Worker<br/>tools / payloads / knowledge"]
-    P -. use .-> X
-    D -. use .-> X
-    L -. use .-> X
-    T -. use .-> X
+- 证据可以跨 cycle 复用，
+- 骑士之间更容易避免重复劳动，
+- `Merlin` 可以直接消费这些条目做路线级调度，
+- 最终复盘时也能更清晰地还原整条利用链。
 
-    B --> W
-    F --> W
-    A --> W
-```
+### 2. 五骑士按“进攻姿态”分工
 
-## 目录结构
+圆桌骑士不按题型硬编码分工，而是按搜索风格和策略偏好分工。
 
-```
+| 骑士 | 姿态 | 典型贡献 |
+| --- | --- | --- |
+| `Gawain` | 工具驱动 | 优先调用 Kali 工具做指纹、协议、探测与快速验证 |
+| `Percival` | 最短路径 | 优先尝试出题人更可能预期的低阻力解法 |
+| `Mordred` | 反常突破 | 专攻边界输入、畸形用法、非预期路线 |
+| `Lancelot` | 单线深钻 | 锁定一条高价值路线持续推进直到证实或证伪 |
+| `Tristan` | 线索缝合 | 将零散证据拼接为完整利用链 |
+
+### 3. Merlin 的 FunSearch 风格路线调度
+
+圆桌骑士不是把 FunSearch 用来演化代码片段，而是把它迁移到“攻击路线搜索”上。对系统而言，被保留和迭代的不是程序，而是**策略快照**。
+
+| FunSearch 概念 | 在圆桌中的映射 |
+| --- | --- |
+| Island | 一类攻击路线，如认证绕过、上传链、SSRF、反序列化 |
+| Candidate | 带有黑板证据、脚本与笔记支撑的策略快照 |
+| Mutation | 只改一个明确因素，如 header、编码、payload 结构或工具选择 |
+| Elite Pool | 每条路线中被保留的高价值候选 |
+| Selection | `Merlin` 决定下一轮该把资源投向哪条路线 |
+
+因此，`Merlin` 不只是一个调度器，更像一个带长期记忆的搜索总控：既能维持广度，又不会在已有突破口上失去连续性。
+
+### 4. Arthur 负责结果校验与收束
+
+`Arthur` 会统一观察 `flag_candidate`、高置信 `artifact` 与关键 `tool_output`。只有当结果足够像合法 flag，或者满足任务终止条件时，整场会议才会真正结束。
+
+## 示意性结果
+
+下列图表仅用于 README 展示系统设计目标与论文风格版式，**不是正式 benchmark 结论**。
+
+### 定性对比
+
+| 系统 | 结构化记忆 | 路线重分配 | 多工具执行 | 人工干预 | 验证式终止 |
+| --- | --- | --- | --- | --- | --- |
+| 单智能体基线 | 否 | 否 | 部分 | 弱 | 弱 |
+| 普通多智能体聊天 | 部分 | 弱 | 部分 | 部分 | 弱 |
+| 圆桌骑士 | 是 | 是 | 是 | 是 | 是 |
+
+### 主结果图
+
+![示意性主结果](docs/assets/main_results.png)
+
+### 消融图
+
+![示意性消融结果](docs/assets/ablation_results.png)
+
+## 仓库结构
+
+```text
 roundtable/
-  core/        黑板、条目类型、工具接口、digest
-  knights/     KnightPolicy 旋钮 + 五骑士配置 + 骑士实现(mock / Codex)
-  roles/       Kay / Merlin / Arthur
-  sandbox/     沙箱工具(Phase 2+)
-tests/         单元测试与协作机制验证
-examples/      端到端演示题目
+  benchmark.py      评测平台 API 接入
+  assemble.py       组装骑士、Merlin 与 Arthur
+  core/             黑板、条目、调度原语
+  funsearch/        候选池、聚类、打分、重排
+  knights/          骑士策略与 Codex worker 接入
+  roles/            Kay、Merlin、Arthur
+gui/                本地图形控制台
+docker/             Worker 镜像定义
+scripts/            构建与启动脚本
+examples/           单题与 benchmark 启动入口
+tests/              单元与集成测试
 ```
 
-## 关键机制
+## 安装
 
-- **Merlin 元认知层**: 负责去重、死路检测、收束、改派任务、目标范围裁决。
-- **FunSearch 风格搜索控制**: 将高价值发现组织成候选路线,维护精英池,并对下一轮最值得扩展的路线做选择与重排。
-- **Arthur 仲裁**: 负责把 flag_candidate、artifact、tool_output 中的高置信旗子统一校验,避免“幻觉命中”直接结束会议。
-- **共享/持久状态**: 黑板、日志、任务记录、本地已解缓存都会落盘,适合长任务和 benchmark 续跑。
+运行前需要准备 Python 3.11+、Docker Desktop，以及已经登录的 Codex CLI 配置。构建脚本会创建包含 Codex、Kali 工具与知识库的共享 worker 镜像。
 
-## Merlin + FunSearch 详细说明
-
-### 它解决的不是“会不会推理”,而是“长期搜索怎么管”
-
-很多多智能体系统在短题上看起来很热闹,但长题里会出现这些问题:
-
-- 多个 agent 重复打一类相近路线
-- 某条路线一时火热,吞掉全部注意力
-- 暂时较弱但未来可能关键的路线被遗忘
-- 失败经验只进日志,不会反过来影响下一轮搜索
-
-这个项目把 **Merlin** 放在全局调度层,再让 Merlin 使用 **FunSearch 风格的搜索控制**,目的就是解决这些问题。
-
-### 在这个项目里,FunSearch 不是解题器,而是搜索控制层
-
-原始 FunSearch 的核心思想不是“让模型一次想到最优答案”,而是:
-
-1. 保留多个候选路线
-2. 每次从其中一条继续做小步变异
-3. 对每个新候选做统一评估
-4. 保留表现好的,淘汰低价值的
-5. 防止搜索只会盯住当前最热的一条线
-
-在 Round Table 里,对应关系大致是:
-
-| FunSearch 概念 | Round Table 对应物 |
-|---|---|
-| island | 一条逻辑上的攻击路线或线索簇 |
-| candidate | 某条路线当前可继续扩展的完整快照 |
-| parent | 当前路线里已验证、值得继续改的候选 |
-| mutation | 下一轮只改变一个明确因素 |
-| evaluator | Merlin 的规则打分 + 黑板反馈 + Arthur 校验 |
-| elite pool | 每条路线保留的高价值候选集合 |
-
-也就是说,这里进化的不是单独一段代码,而是**攻击路线本身**。
-
-### island 在 CTF 里是什么意思
-
-island 不是线程,不是容器,也不是固定角色。
-
-它更像是“同一道题里的一个方向”,比如:
-
-- 登录绕过
-- 文件上传
-- 反序列化
-- 附件逆向
-- 本地服务 pivot
-- 静态资源泄露
-- 协议误用
-
-每条路线都会留下自己的候选历史。这样就算某条路线暂时不热,也不会立刻从系统记忆里消失。
-
-### candidate 具体记录什么
-
-在这个项目里,一个 candidate 不是一句自然语言想法,而是一份能继续扩展的完整快照。通常会关联:
-
-- 黑板条目 id
-- 标题、正文、标签、引用关系
-- 当前路线得分
-- 对应 island
-- 是否进入 elite pool
-- 后续被选择次数
-- 工作目录里的策略快照与结果文件
-
-相关实现见:
-
-- [roundtable/funsearch/merlin_control.py](/Users/guyuwei/Documents/ai/CodexResearch/round_table/roundtable/funsearch/merlin_control.py)
-- [roundtable/funsearch/population.py](/Users/guyuwei/Documents/ai/CodexResearch/round_table/roundtable/funsearch/population.py)
-
-### Merlin 如何实际使用 FunSearch
-
-Merlin 每轮会做这些事情:
-
-1. 扫描本轮黑板新增的高价值条目
-2. 把符合条件的条目注册进 FunSearch population
-3. 将不同标签/类型的路线归入不同 island
-4. 从 population 中选出下一条最值得扩展的路线
-5. 把这条路线转成对某位骑士的具体 directive
-6. 等骑士新结果回桌后,再次记录并打分
-
-所以 Merlin 的职责不只是“看一眼黑板”,而是:
-
-- 管路线
-- 管搜索节奏
-- 管证据沉淀
-- 管下一轮注意力投向哪里
-
-### 为什么强调“小步变异”
-
-FunSearch 最重要的经验之一是: **一次只改一个明确因素**。
-
-例如某条路线当前状态是:
-
-- 已发现 `/setup/status`
-- 已确认未鉴权读取
-- 正在尝试 POST 写接口
-
-那么更合理的下一轮变异是:
-
-- 只改请求方法
-- 只改 `Content-Type`
-- 只改 body 结构
-- 只改 header 组合
-- 只换一种 Kali 工具复现
-
-而不是同时改 endpoint、payload、header 和代理方式。
-
-这样一旦结果变好或变差,系统才知道究竟是哪一个因素带来了变化。
-
-### 评分为什么重要
-
-当前项目里的 FunSearch 不是黑箱排序,而是偏工程化的规则评分。候选分数会综合考虑:
-
-- 条目类型
-- 置信度
-- endorse / challenge
-- 引用关系与正文信息量
-- 是否是 artifact / tool_output / flag_candidate
-- 是否被标记为 dead_end 或 refuted
-
-这会让 Merlin 更偏向选择真实产生新证据和可复现价值的路线,而不是只会“说得像对”的路线。
-
-### LLM 在这套 FunSearch 里扮演什么角色
-
-这里的 LLM 不是唯一评估器,而是一个可选的辅助重排器。
-
-项目当前思路是:
-
-1. 规则先筛出 shortlist
-2. Merlin 再可选地调用 Codex 做二次 rerank
-
-这样既保留了稳定、可控的主体逻辑,也保留了语义层面的柔性判断能力。
-
-### 为什么这是这个项目的亮点
-
-这套设计真正特别的地方在于:
-
-- 骑士负责“动手”
-- 黑板负责“记忆”
-- Arthur 负责“验旗”
-- **Merlin + FunSearch 负责“长期搜索控制”**
-
-所以它不是普通的“5 个 agent 一起跑”,而是:
-
-**一个带有持久路线记忆、候选保留、重排和收束能力的 CTF 搜索系统。**
-
-## 开发阶段
-
-- **Phase 1**(当前):黑板 + 协议 + 脚本模拟骑士(无 LLM 即可验证协作骨架)
-- **Phase 2**:Kay 主循环 + Arthur + 接入 Codex CLI 真骑士 + 沙箱
-- **Phase 3**:Merlin 元认知(去重/死路/收束)
-- **Phase 4**:加固(沙箱隔离、预算、姿态池化、复盘报告)
-
-## 快速开始(Phase 1,无需 LLM / API Key)
+### 1. 克隆仓库并安装 Python 依赖
 
 ```bash
+git clone https://github.com/ignite0522/round_table.git
 cd round_table
-python -m pytest tests/ -v          # 跑协作机制测试
-python -m examples.demo_base64      # 脚本模拟骑士端到端跑通一道简单题
+pip install -r requirements.txt
 ```
 
-## Kali Worker(第一版)
-
-当前仓库提供了一版自建的 `Kali-lite` worker 镜像定义,目标是给圆桌骑士提供一个
-预装常用 CTF/Web 安全工具的容器工位,同时保留项目代码在宿主机、运行时挂载进容器。
-
-### 已安装工具
-
-- 通用:`curl` `jq` `ripgrep` `fd` `git` `python3` `pip` `nodejs` `npm`
-- Web/CTF:`nmap` `naabu` `sqlmap` `nikto` `dirsearch` `ffuf` `gobuster` `feroxbuster` `wfuzz`
-- 其他:`netcat` `ncat` `binwalk` `exiftool` `xxd`
-- Agent CLI:`codex`
-
-注意: Dockerfile 里会在构建阶段移除 `nmap` 二进制的 file capabilities,避免它在 `NoNewPrivs` 一类容器限制下直接起不来。重建镜像后,`nmap` 应可作为普通用户态工具使用; 涉及原始套接字/特权扫描能力时仍可能受限。端口/服务侦察依然推荐优先配合 `naabu`、`ncat`、`nc`、`curl`、`openssl s_client`、`httpx`、`whatweb`。
-
-### 构建镜像
+### 2. 构建共享 Kali Worker
 
 ```bash
 ./scripts/build_roundtable_kali.sh
 ```
 
-如需自定义 tag:
+## 快速启动
+
+### 启动本地 GUI
 
 ```bash
-./scripts/build_roundtable_kali.sh roundtable-kali:dev
+python -m gui.app
 ```
 
-### 进入容器
+然后打开 [http://127.0.0.1:5055](http://127.0.0.1:5055)。
 
-下面命令会:
-
-- 把仓库挂载到容器内 `/opt/roundtable`
-- 把工作目录挂载到容器内 `/workspace`
-- 把宿主机 `CODEX_HOME` 或默认 `~/.codex` 只读挂载到 `/host-codex-home`
-- 首次启动时把 `auth.json` 复制进容器用户自己的 `~/.codex`
+### 命令行运行单题
 
 ```bash
-./scripts/run_roundtable_kali.sh
+python -m examples.run_ctf \
+  "http://target.example/" \
+  --cwd ./round_table_work/demo \
+  --docker-image roundtable-kali:latest \
+  --no-sandbox
 ```
 
-指定工作目录:
+### 命令行运行 benchmark
 
 ```bash
-./scripts/run_roundtable_kali.sh ./round_table_work/run-demo bash
+python -m examples.run_benchmark \
+  --cwd ./round_table_work/benchmark-runs \
+  --docker-image roundtable-kali:latest \
+  --no-sandbox
 ```
 
-进容器后,你可以直接验证工具和 Codex:
+## 运行说明
 
-```bash
-codex --version
-naabu -version
-ffuf -V
-```
+- 每道题都会生成独立工作目录，保存日志、黑板、附件与骑士笔记。
+- 多位骑士可以共享同一个 Kali worker，但使用各自独立的工作目录。
+- GUI 支持运行中追加人工指令，由系统按最高优先级下发。
+- 上面的表格为展示性内容，用于表达系统目标与方法风格，不代表正式评测结果。

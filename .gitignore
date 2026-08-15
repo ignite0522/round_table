@@ -9,6 +9,6 @@ __pycache__/
 venv/
 
 round_table_work/
+tmp/
 
 *.log
-
