@@ -30,6 +30,52 @@
 
 **五骑士(进攻姿态)**:Gawain 工具师 · Percival 走正门 · Mordred 逆向出题人 · Lancelot 单线死磕 · Tristan 侧向缝合。
 
+## Framework
+
+```mermaid
+flowchart LR
+    U["User / GUI Console"] --> K["Kay<br/>Orchestrator"]
+    U --> W["Workspace<br/>logs / board / notes / cache"]
+
+    K --> B["Blackboard"]
+    K --> M["Merlin<br/>Meta-control"]
+    K --> A["Arthur<br/>Flag Arbiter"]
+    K --> G["Gawain<br/>工具师"]
+    K --> P["Percival<br/>直给者"]
+    K --> D["Mordred<br/>破坏者"]
+    K --> L["Lancelot<br/>钻探者"]
+    K --> T["Tristan<br/>缝合者"]
+
+    G --> B
+    P --> B
+    D --> B
+    L --> B
+    T --> B
+
+    B --> M
+    M --> F["FunSearch Population<br/>islands / elites / candidates"]
+    F --> M
+
+    M --> G
+    M --> P
+    M --> D
+    M --> L
+    M --> T
+
+    B --> A
+    A --> K
+
+    G -. use .-> X["Kali Worker<br/>tools / payloads / knowledge"]
+    P -. use .-> X
+    D -. use .-> X
+    L -. use .-> X
+    T -. use .-> X
+
+    B --> W
+    F --> W
+    A --> W
+```
+
 ## 目录结构
 
 ```
@@ -48,6 +94,152 @@ examples/      端到端演示题目
 - **FunSearch 风格搜索控制**: 将高价值发现组织成候选路线,维护精英池,并对下一轮最值得扩展的路线做选择与重排。
 - **Arthur 仲裁**: 负责把 flag_candidate、artifact、tool_output 中的高置信旗子统一校验,避免“幻觉命中”直接结束会议。
 - **共享/持久状态**: 黑板、日志、任务记录、本地已解缓存都会落盘,适合长任务和 benchmark 续跑。
+
+## Merlin + FunSearch 详细说明
+
+### 它解决的不是“会不会推理”,而是“长期搜索怎么管”
+
+很多多智能体系统在短题上看起来很热闹,但长题里会出现这些问题:
+
+- 多个 agent 重复打一类相近路线
+- 某条路线一时火热,吞掉全部注意力
+- 暂时较弱但未来可能关键的路线被遗忘
+- 失败经验只进日志,不会反过来影响下一轮搜索
+
+这个项目把 **Merlin** 放在全局调度层,再让 Merlin 使用 **FunSearch 风格的搜索控制**,目的就是解决这些问题。
+
+### 在这个项目里,FunSearch 不是解题器,而是搜索控制层
+
+原始 FunSearch 的核心思想不是“让模型一次想到最优答案”,而是:
+
+1. 保留多个候选路线
+2. 每次从其中一条继续做小步变异
+3. 对每个新候选做统一评估
+4. 保留表现好的,淘汰低价值的
+5. 防止搜索只会盯住当前最热的一条线
+
+在 Round Table 里,对应关系大致是:
+
+| FunSearch 概念 | Round Table 对应物 |
+|---|---|
+| island | 一条逻辑上的攻击路线或线索簇 |
+| candidate | 某条路线当前可继续扩展的完整快照 |
+| parent | 当前路线里已验证、值得继续改的候选 |
+| mutation | 下一轮只改变一个明确因素 |
+| evaluator | Merlin 的规则打分 + 黑板反馈 + Arthur 校验 |
+| elite pool | 每条路线保留的高价值候选集合 |
+
+也就是说,这里进化的不是单独一段代码,而是**攻击路线本身**。
+
+### island 在 CTF 里是什么意思
+
+island 不是线程,不是容器,也不是固定角色。
+
+它更像是“同一道题里的一个方向”,比如:
+
+- 登录绕过
+- 文件上传
+- 反序列化
+- 附件逆向
+- 本地服务 pivot
+- 静态资源泄露
+- 协议误用
+
+每条路线都会留下自己的候选历史。这样就算某条路线暂时不热,也不会立刻从系统记忆里消失。
+
+### candidate 具体记录什么
+
+在这个项目里,一个 candidate 不是一句自然语言想法,而是一份能继续扩展的完整快照。通常会关联:
+
+- 黑板条目 id
+- 标题、正文、标签、引用关系
+- 当前路线得分
+- 对应 island
+- 是否进入 elite pool
+- 后续被选择次数
+- 工作目录里的策略快照与结果文件
+
+相关实现见:
+
+- [roundtable/funsearch/merlin_control.py](/Users/guyuwei/Documents/ai/CodexResearch/round_table/roundtable/funsearch/merlin_control.py)
+- [roundtable/funsearch/population.py](/Users/guyuwei/Documents/ai/CodexResearch/round_table/roundtable/funsearch/population.py)
+
+### Merlin 如何实际使用 FunSearch
+
+Merlin 每轮会做这些事情:
+
+1. 扫描本轮黑板新增的高价值条目
+2. 把符合条件的条目注册进 FunSearch population
+3. 将不同标签/类型的路线归入不同 island
+4. 从 population 中选出下一条最值得扩展的路线
+5. 把这条路线转成对某位骑士的具体 directive
+6. 等骑士新结果回桌后,再次记录并打分
+
+所以 Merlin 的职责不只是“看一眼黑板”,而是:
+
+- 管路线
+- 管搜索节奏
+- 管证据沉淀
+- 管下一轮注意力投向哪里
+
+### 为什么强调“小步变异”
+
+FunSearch 最重要的经验之一是: **一次只改一个明确因素**。
+
+例如某条路线当前状态是:
+
+- 已发现 `/setup/status`
+- 已确认未鉴权读取
+- 正在尝试 POST 写接口
+
+那么更合理的下一轮变异是:
+
+- 只改请求方法
+- 只改 `Content-Type`
+- 只改 body 结构
+- 只改 header 组合
+- 只换一种 Kali 工具复现
+
+而不是同时改 endpoint、payload、header 和代理方式。
+
+这样一旦结果变好或变差,系统才知道究竟是哪一个因素带来了变化。
+
+### 评分为什么重要
+
+当前项目里的 FunSearch 不是黑箱排序,而是偏工程化的规则评分。候选分数会综合考虑:
+
+- 条目类型
+- 置信度
+- endorse / challenge
+- 引用关系与正文信息量
+- 是否是 artifact / tool_output / flag_candidate
+- 是否被标记为 dead_end 或 refuted
+
+这会让 Merlin 更偏向选择真实产生新证据和可复现价值的路线,而不是只会“说得像对”的路线。
+
+### LLM 在这套 FunSearch 里扮演什么角色
+
+这里的 LLM 不是唯一评估器,而是一个可选的辅助重排器。
+
+项目当前思路是:
+
+1. 规则先筛出 shortlist
+2. Merlin 再可选地调用 Codex 做二次 rerank
+
+这样既保留了稳定、可控的主体逻辑,也保留了语义层面的柔性判断能力。
+
+### 为什么这是这个项目的亮点
+
+这套设计真正特别的地方在于:
+
+- 骑士负责“动手”
+- 黑板负责“记忆”
+- Arthur 负责“验旗”
+- **Merlin + FunSearch 负责“长期搜索控制”**
+
+所以它不是普通的“5 个 agent 一起跑”,而是:
+
+**一个带有持久路线记忆、候选保留、重排和收束能力的 CTF 搜索系统。**
 
 ## 开发阶段
 
