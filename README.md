@@ -94,7 +94,7 @@
 
 ### 主结果图
 
-![示意性主结果](docs/assets/main_results.png)
+![示意性主结果](docs/assets/main_results_v2.png)
 
 ### 消融图
 
