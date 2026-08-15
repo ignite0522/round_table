@@ -4,6 +4,13 @@
 
 设计文档见仓库根目录 `DESIGN_圆桌骑士.md`。
 
+## 项目亮点
+
+- **Merlin + FunSearch 调度**: Merlin 不只是做去重和防撞路,还把黑板上的高价值路线组织成 FunSearch 风格的候选池,在多条攻击路线之间做选择、重排和持续推进。
+- **黑板式多智能体协作**: 五骑士共享结构化黑板,不是闲聊式多 agent,更利于去重、复盘和把半成品线索滚成完整利用链。
+- **Kali Worker 执行环境**: 骑士可以在预装安全工具、知识库和利用脚本的 Kali 容器里工作,把“会推理”落到“真能动手”。
+- **本地 GUI 控制台**: 支持批量入队、并发调度、人工追加指令、排队置顶和过程日志回看,方便长时间 benchmark 或多题批量跑。
+
 ## 四条设计铁律
 
 1. **黑板是唯一真相源,不是聊天室** —— 骑士只读写结构化条目。
@@ -18,7 +25,7 @@
 | Kay | Orchestrator | 发牌、驱动主循环、终止判定 |
 | 圆桌 | Blackboard | 结构化条目的共享真相源 |
 | 5 骑士 | Knight | 按姿态进攻,读写黑板 |
-| Merlin | 元认知层 | 去重、死路检测、digest、防撞路 |
+| Merlin | 元认知层 | 去重、死路检测、digest、防撞路、FunSearch 路线调度 |
 | Arthur | 仲裁 | 验证 flag,宣布散会 |
 
 **五骑士(进攻姿态)**:Gawain 工具师 · Percival 走正门 · Mordred 逆向出题人 · Lancelot 单线死磕 · Tristan 侧向缝合。
@@ -34,6 +41,13 @@ roundtable/
 tests/         单元测试与协作机制验证
 examples/      端到端演示题目
 ```
+
+## 关键机制
+
+- **Merlin 元认知层**: 负责去重、死路检测、收束、改派任务、目标范围裁决。
+- **FunSearch 风格搜索控制**: 将高价值发现组织成候选路线,维护精英池,并对下一轮最值得扩展的路线做选择与重排。
+- **Arthur 仲裁**: 负责把 flag_candidate、artifact、tool_output 中的高置信旗子统一校验,避免“幻觉命中”直接结束会议。
+- **共享/持久状态**: 黑板、日志、任务记录、本地已解缓存都会落盘,适合长任务和 benchmark 续跑。
 
 ## 开发阶段
 
@@ -102,45 +116,3 @@ codex --version
 naabu -version
 ffuf -V
 ```
-
-## 上传到 GitHub 时要放什么
-
-这个项目里的 Docker 不建议把已经构建好的镜像本体提交到 GitHub 仓库。通常只需要提交:
-
-- 项目代码
-- `docker/roundtable-kali/Dockerfile`
-- `docker/roundtable-kali/entrypoint.sh`
-- `scripts/build_roundtable_kali.sh`
-- `scripts/run_roundtable_kali.sh`
-- 本 README
-
-也就是说,仓库里放的是**镜像构建配方**,不是本地已经 build 完的镜像 layer / cache / 容器数据。
-
-### 推荐提交流程
-
-```bash
-git add .
-git commit -m "Prepare round table for GitHub"
-git push origin main
-```
-
-### 别提交这些
-
-- `round_table_work/`
-- 本地测试日志
-- Docker build cache
-- 本机生成的临时文件
-
-这些内容已经在 `.gitignore` 里做了基础忽略。
-
-## 让别人复现 Docker
-
-别人拿到仓库后,正常只需要:
-
-```bash
-git clone <your-repo-url>
-cd round_table
-./scripts/build_roundtable_kali.sh
-```
-
-如果你后面希望别人不用本地构建,可以再把镜像推到 Docker Hub 或 `ghcr.io`,但那是**镜像仓库**的事情,不是 GitHub 代码仓库本身要存放的内容。
