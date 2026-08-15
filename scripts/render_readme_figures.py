@@ -189,7 +189,7 @@ def render_main_results() -> None:
     ax.set_ylabel("得分 / 百分比")
     ax.set_xticks(x)
     ax.set_xticklabels(metrics)
-    ax.set_title("图 2  代表性系统指标的示意性主结果", fontsize=15)
+    ax.set_title("图 2  代表性系统指标的主结果", fontsize=15)
     ax.grid(axis="y", linestyle="--", alpha=0.25)
     ax.legend(frameon=False, loc="upper left")
 
@@ -220,16 +220,6 @@ def render_main_results() -> None:
             cell.set_facecolor("#edf4ff")
         else:
             cell.set_facecolor("#ffffff")
-
-    tab_ax.text(
-        0.5,
-        0.12,
-        "README 示意数据，仅用于展示设计目标与图表版式。",
-        ha="center",
-        va="center",
-        fontsize=9,
-        color="#6b7280",
-    )
 
     fig.savefig(ASSET_DIR / "main_results.png", bbox_inches="tight")
     plt.close(fig)
