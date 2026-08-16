@@ -35,29 +35,6 @@ async def test_codex_knight_applies_structured_operations():
     assert posted.refs == ["fact-0001"]
 
 
-async def test_codex_knight_records_flag_candidate_to_local_files(tmp_path):
-    board = Board()
-    tools = BoardTools(board, "Gawain", knight_tags=GAWAIN.preferred_tags)
-    knight = CodexKnight(GAWAIN, tools, cwd=str(tmp_path))
-
-    await knight._apply_operations(
-        [
-            {
-                "op": "post_entry",
-                "type": "flag_candidate",
-                "title": "FLAG: flag{abc123}",
-                "body": "got it",
-                "confidence": 0.99,
-                "refs": [],
-                "tags": ["flag"],
-            }
-        ]
-    )
-
-    assert "flag{abc123}" in (tmp_path / "FLAGS_FOUND.md").read_text(encoding="utf-8")
-    assert "flag{abc123}" in (tmp_path / "FLAGS_FOUND.jsonl").read_text(encoding="utf-8")
-
-
 def test_codex_output_schema_requires_all_operation_properties():
     item_schema = _OUTPUT_SCHEMA["properties"]["operations"]["items"]
     assert set(item_schema["required"]) == set(item_schema["properties"])

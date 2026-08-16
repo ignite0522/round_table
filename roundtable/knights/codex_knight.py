@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import re
+import signal
 import socket
 import shutil
 import subprocess
@@ -98,6 +99,7 @@ class CodexKnight(Knight):
         self._codex_home_dir: str | None = None
         self._docker_session_key: tuple[str, str, str] | None = None
         self._docker_container_name: str | None = None
+        self._active_proc: asyncio.subprocess.Process | None = None
 
     async def connect(self) -> None:
         if self.docker_image:
@@ -105,7 +107,11 @@ class CodexKnight(Knight):
             return
         if self._codex_home_dir is not None:
             return
-        self._codex_home_dir = tempfile.mkdtemp(prefix="roundtable-codex-home-")
+        tmp_parent = None
+        if self.cwd:
+            tmp_parent = str((Path(self.cwd) / ".roundtable_codex_home").resolve())
+            Path(tmp_parent).mkdir(parents=True, exist_ok=True)
+        self._codex_home_dir = tempfile.mkdtemp(prefix="roundtable-codex-home-", dir=tmp_parent)
         self._seed_codex_home(Path(self._codex_home_dir))
 
     async def disconnect(self) -> None:
@@ -125,21 +131,21 @@ class CodexKnight(Knight):
             self.policy.render_system_prompt(closing_mode=self.closing_mode),
             "",
             "你现在运行在 Codex CLI 的一个非交互 cycle 里。",
-            "【重要】若当前是 Docker worker 模式,则你运行在一个预装多种安全工具的 Kali Linux 容器里。",
+            "【重要】若当前是 Docker 模式,则你运行在一个预装常用依赖与工具的容器里；否则你直接运行在本地项目环境中。",
             "可以在当前工作目录中使用 shell/文件工具分析题目附件或访问授权靶机。",
-            "【重要】优先使用 Kali 容器内现成的安全工具、知识库与利用脚本,不要把它当成普通裸环境。",
-            "【重要】所有骑士在适当且合适的时候,都应主动想到调用 Kali/系统内现成工具、知识库、字典、payload 仓库与利用脚本来验证、侦察、下载、解码、逆向或利用,不要只靠口头推理。",
+            "【重要】优先使用当前环境里现成的安全工具、知识库与利用脚本,不要把它当成普通裸环境。",
+            "【重要】所有骑士在适当且合适的时候,都应主动想到调用当前环境内现成工具、知识库、字典、payload 仓库与利用脚本来验证、侦察、下载、解码、逆向或利用,不要只靠口头推理。",
             "【重要】默认只攻击题目给定的目标地址、附件，以及由目标页面/目标服务直接暴露的资源；不要自行把攻击面扩展到无关主机。",
             "【重要】禁止把你当前机器、宿主机、Docker worker 或代理链里的 `localhost`、`127.0.0.1`、`::1`、`host.docker.internal` 当作靶机。",
             "【重要】默认也禁止通过伪造 `Host: localhost`、`Host: 127.0.0.1:PORT`、绝对 URI、本地 vhost 猜测或类似技巧去探测这些地址；这仍然算在打本机/宿主/worker，不算在打题目目标。",
             "【重要】只有当你已经从题目目标本身拿到明确、直接、强证据，证明该请求确实由目标后端代发/转发到这些地址时，才可把它们视作目标攻击面的延伸；若没有这种证据，就把这类方向视为越界并停止。",
             "【重要】开局先自行探测当前环境里可用的命令、工具与知识库路径,再决定利用路径。",
             "【重要】不要把 `command -v` 当成可用性证明; 需要用一次轻量 dry-run 或 `--help/--version` 级别实测确认工具真的能执行。",
-            "【重要】当前 worker 里 `nmap` 可能存在命令包装器但底层执行会被拒绝; 做端口/服务侦察优先改用 `naabu`、`ncat`、`nc`、`curl`、`openssl s_client`、`whatweb`、`httpx` 等可执行工具。",
+            "【重要】先自行确认当前环境中哪些工具真的能执行; 做端口/服务侦察时优先使用你已实测可用的工具链。",
             "【重要】由于每个 cycle 都会重新调用一次 codex exec,你的进程内短期记忆不会保留。",
             "【重要】请把阶段性笔记、中间结论、待验证思路、关键命令结果写入你自己的当前工作目录文件中,以便下一轮继续利用。",
             "【重要】这些笔记应尽量简洁、结构化、可续写;例如 NOTES.md、findings.txt、scratch.json 等。",
-            "【重要】若本题通过 GUI/宿主上传了附件,在共享 Docker worker 中通常可先查看 `/workspace/attachments` 与 `/workspace/workspace` 两处。",
+            "【重要】若本题通过 GUI/宿主上传了附件,优先检查当前工作目录及其 `attachments` 邻近目录。",
             "访问题目 URL 时优先绕过本地代理,例如 curl 使用 `--noproxy '*'`,避免 localhost 代理在沙箱中不可用。",
             "黑板不能直接调用工具写入;你必须在最终回答里返回 JSON,由宿主程序代你执行黑板操作。",
             "",
@@ -458,14 +464,17 @@ class CodexKnight(Knight):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._build_child_env(prompt),
+                start_new_session=True,
             )
+            self._active_proc = proc
             try:
                 stdout, stderr = await proc.communicate(prompt.encode("utf-8"))
             except asyncio.CancelledError:
-                if proc.returncode is None:
-                    proc.kill()
-                    await proc.communicate()
+                await self._terminate_active_process_tree()
                 raise
+            finally:
+                if self._active_proc is proc:
+                    self._active_proc = None
             if proc.returncode != 0:
                 debug_dir = self._write_failure_debug_bundle(
                     prompt=prompt,
@@ -485,6 +494,24 @@ class CodexKnight(Knight):
             n_posts = await self._apply_operations(ops)
             self.note_productive(n_posts)
             return n_posts
+
+    async def force_terminate(self) -> None:
+        await self._terminate_active_process_tree()
+
+    async def _terminate_active_process_tree(self) -> None:
+        proc = self._active_proc
+        if proc is None or proc.returncode is not None:
+            return
+        try:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+            except OSError:
+                proc.kill()
+            await asyncio.wait_for(proc.communicate(), timeout=1.0)
+        except (asyncio.TimeoutError, ProcessLookupError):
+            pass
 
     def _build_cmd(self, out_path: Path, schema_path: Path) -> list[str]:
         rendered_out_path = str(out_path)
@@ -528,9 +555,23 @@ class CodexKnight(Knight):
 
     def _seed_codex_home(self, codex_home: Path) -> None:
         auth_src = self._default_codex_home() / "auth.json"
+        if self._api_key_auth_available():
+            if auth_src.exists():
+                shutil.copy2(auth_src, codex_home / "auth.json")
+            return
         if not auth_src.exists():
             raise FileNotFoundError(f"Codex auth not found: {auth_src}")
         shutil.copy2(auth_src, codex_home / "auth.json")
+
+    def _api_key_auth_available(self) -> bool:
+        return any(
+            os.environ.get(name)
+            for name in (
+                "ANTHROPIC_API_KEY",
+                "DEEPSEEK_API_KEY",
+                "OPENAI_API_KEY",
+            )
+        )
 
     def _default_codex_home(self) -> Path:
         raw = os.environ.get("CODEX_HOME")

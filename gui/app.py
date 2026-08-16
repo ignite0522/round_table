@@ -25,7 +25,7 @@ from roundtable.benchmark import BenchmarkAPIError, BenchmarkClient, ChallengeIn
 
 
 GUI_RUNS_ROOT = REPO_ROOT / "round_table_work" / "gui-runs"
-DEFAULT_DOCKER_IMAGE = "roundtable-kali:latest"
+DEFAULT_DOCKER_IMAGE = None
 LOG_TAIL_BYTES = 48_000
 MAX_RUNNING_TASKS = 3
 BENCHMARK_MAX_ACTIVE_INSTANCES = 3
@@ -1424,8 +1424,6 @@ def create_benchmark_record(unique_code: str, challenge: ChallengeInfo, client: 
         unique_code,
         "--title",
         challenge.unique_code,
-        "--docker-image",
-        DEFAULT_DOCKER_IMAGE,
         "--no-sandbox",
     ]
     should_queue = len(running_runs()) >= MAX_RUNNING_TASKS
@@ -1448,7 +1446,7 @@ def create_benchmark_record(unique_code: str, challenge: ChallengeInfo, client: 
         url="",
         statement=challenge.description or "",
         attachment_names=[],
-        docker_image=DEFAULT_DOCKER_IMAGE,
+        docker_image=None,
         benchmark_unique_code=unique_code,
         benchmark_base_url=client.base_url,
         launch_state=launch_state,
@@ -1575,7 +1573,7 @@ def launch_run():
         cmd += ["--statement", statement]
     for attachment_path in attachment_paths:
         cmd += ["--attach", str(attachment_path)]
-    cmd += ["--docker-image", DEFAULT_DOCKER_IMAGE, "--no-sandbox"]
+    cmd += ["--no-sandbox"]
 
     should_queue = len(running_runs()) >= MAX_RUNNING_TASKS
     proc = None if should_queue else spawn_run(cmd, log_path)
@@ -1599,7 +1597,7 @@ def launch_run():
         statement=statement,
         hints=hints,
         attachment_names=[p.name for p in attachment_paths],
-        docker_image=DEFAULT_DOCKER_IMAGE,
+        docker_image=None,
         launch_state=launch_state,
         queue_rank=time.time() if should_queue else None,
         pid=proc.pid if proc else None,

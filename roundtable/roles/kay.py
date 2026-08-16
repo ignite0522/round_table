@@ -63,7 +63,7 @@ class Kay:
         arthur: Arthur,
         *,
         time_budget_s: float = 4 * 3600,       # 4 小时硬上限
-        closing_fraction: float = 0.95,        # 进度到此切收束模式(3h48m)
+        closing_fraction: float = 0.7,         # 进度到此切收束模式(更早集中火力)
         stall_patience_cycles: int = 6,        # 全员连续空转多少轮判定停滞
         merlin_tick_every: int = 1,            # 每几轮让 Merlin 扫一次
         max_cycles: int | None = None,         # 调试/测试用硬上限
@@ -88,6 +88,7 @@ class Kay:
 
         self.timeline: list[dict] = []
         self._closing_entered = False
+        self._flag_cancel_timeout_s = 2.0
 
     def _say(self, msg: str) -> None:
         if self.verbose:
@@ -237,14 +238,19 @@ class Kay:
                 self._say(f"  ⚠ 进入收束模式,集中火力:{best.title if best else '(无)'}")
 
             if elapsed >= self.time_budget_s:
+                final_flag = await self._final_arthur_check(reason="timeout", cycle=cycle)
+                if final_flag:
+                    return self._finish("flag", cycle, start, flag=final_flag)
                 return self._finish("timeout", cycle, start)
 
             # —— 五骑士并发跑一个 cycle；若中途已有可验证 flag，立即收口并中断其余骑士 ——
             all_before = {e.id for e in self.board.all()}
-            task_by_knight = {
-                k.name: asyncio.create_task(self._run_knight(k))
-                for k in self.knights
-            }
+            knight_by_task = {}
+            task_by_knight = {}
+            for k in self.knights:
+                task = asyncio.create_task(self._run_knight(k))
+                task_by_knight[k.name] = task
+                knight_by_task[task] = k
             pending = set(task_by_knight.values())
             posts_this_cycle = 0
             early_flag: str | None = None
@@ -263,17 +269,12 @@ class Kay:
                     # 只要有骑士先产出 flag 候选/高置信旗子，就立刻让 Arthur 验旗。
                     early_flag = await self.arthur.check()
                     if early_flag:
-                        for task in pending:
-                            task.cancel()
-                        if pending:
-                            await asyncio.gather(*pending, return_exceptions=True)
+                        await self._cancel_pending_tasks(pending, knight_by_task, reason="early_flag")
                         pending.clear()
                         break
             finally:
                 if pending:
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
+                    await self._cancel_pending_tasks(pending, knight_by_task, reason="cycle_cleanup")
 
             self._log("cycle", n=cycle, posts=posts_this_cycle)
 
@@ -284,6 +285,12 @@ class Kay:
                     k._last_error = None
             self._say(f"── cycle {cycle} 结束,本轮新增 {len(new_entries)} 条,黑板共 {len(self.board)} 条\n")
 
+            # —— Arthur 已在本轮中途确认 flag：直接散会，不再触发 Merlin / rerank / 额外 LLM 调用 ——
+            if early_flag:
+                self._log("flag", flag=early_flag, cycle=cycle)
+                self._say(f"  🏁 Arthur 确认 flag:{early_flag}")
+                return self._finish("flag", cycle, start, flag=early_flag)
+
             # —— Merlin 扫桌 ——
             if cycle % self.merlin_tick_every == 0:
                 report = await self.merlin.tick(self.knights, now=self.clock())
@@ -293,7 +300,7 @@ class Kay:
                     self._say(f"  -> Merlin:{active}")
 
             # —— Arthur 验旗 ——
-            flag = early_flag or await self.arthur.check()
+            flag = await self.arthur.check()
             if flag:
                 self._log("flag", flag=flag, cycle=cycle)
                 self._say(f"  🏁 Arthur 确认 flag:{flag}")
@@ -301,11 +308,24 @@ class Kay:
 
             # —— 停滞判定 ——
             if all(getattr(k, "idle_cycles", 0) >= self.stall_patience_cycles for k in self.knights):
+                final_flag = await self._final_arthur_check(reason="stalled", cycle=cycle)
+                if final_flag:
+                    return self._finish("flag", cycle, start, flag=final_flag)
                 return self._finish("stalled", cycle, start)
 
             # —— 调试上限 ——
             if self.max_cycles is not None and cycle >= self.max_cycles:
+                final_flag = await self._final_arthur_check(reason="max_cycles", cycle=cycle)
+                if final_flag:
+                    return self._finish("flag", cycle, start, flag=final_flag)
                 return self._finish("max_cycles", cycle, start)
+
+    async def _final_arthur_check(self, *, reason: str, cycle: int) -> str | None:
+        flag = await self.arthur.check()
+        if flag:
+            self._log("final_flag", reason=reason, cycle=cycle, flag=flag)
+            self._say(f"  🏁 Arthur 临门复核命中 flag:{flag}")
+        return flag
 
     async def _run_knight(self, knight: Knight) -> int:
         """跑单个骑士的一个 cycle,注入 Merlin 指令。"""
@@ -318,6 +338,47 @@ class Kay:
             self._log("knight_error", knight=knight.name, error=repr(e))
             knight._last_error = repr(e)
             return 0
+
+    async def _cancel_pending_tasks(
+        self,
+        pending: set[asyncio.Task],
+        knight_by_task: dict[asyncio.Task, Knight],
+        *,
+        reason: str,
+    ) -> None:
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(*pending, return_exceptions=True),
+                timeout=self._flag_cancel_timeout_s,
+            )
+        except asyncio.TimeoutError:
+            lingering = [task for task in pending if not task.done()]
+            for task in lingering:
+                knight = knight_by_task.get(task)
+                force_terminate = getattr(knight, "force_terminate", None)
+                if callable(force_terminate):
+                    try:
+                        await force_terminate()
+                    except Exception as e:
+                        self._log(
+                            "force_terminate_error",
+                            reason=reason,
+                            knight=getattr(knight, "name", "(unknown)"),
+                            error=repr(e),
+                        )
+            self._log(
+                "cancel_timeout",
+                reason=reason,
+                pending=len(lingering),
+                timeout_s=self._flag_cancel_timeout_s,
+            )
+            self._say(
+                f"  ⚠ 其余骑士取消超时({self._flag_cancel_timeout_s:.0f}s)，直接进入收尾。"
+            )
 
     def _finish(self, reason: str, cycle: int, start: float, flag: str | None = None) -> MeetingResult:
         elapsed = self.clock() - start

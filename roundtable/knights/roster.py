@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from .policy import KnightPolicy
 
-# —————————————————————— Gawain:Kali 工具大师 ——————————————————————
+# —————————————————————— Gawain:工具大师 ——————————————————————
 GAWAIN = KnightPolicy(
     name="Gawain",
     posture="recon",
@@ -22,8 +22,8 @@ GAWAIN = KnightPolicy(
     post_confidence_threshold=0.2,     # 低门槛:事实照单全发(高召回)
     post_partial_findings=True,
     tool_budget_per_cycle=8,
-    focus="优先调用 Kali 容器内现成工具、知识库、payload 仓库与利用脚本来验证思路、分析附件、枚举服务、复现实验和提炼可复用命令。你的职责不是空手侦查，而是成为全桌最会用工具的人。",
-    tool_style="你是全桌的 Kali 工具大师。每个 cycle 默认至少尝试 1~2 个现成工具、脚本或知识库路径，把关键结果浓缩成 fact/tool_output 供其他骑士复用。优先做可复现、可复制、可交接的工具链验证；拿不准时先实测工具是否真能执行。注意: 不要默认依赖 nmap,先实测工具能否执行; 端口/协议侦察优先用 naabu、ncat/nc、curl、openssl s_client、httpx、whatweb。",
+    focus="优先调用当前环境内现成工具、知识库、payload 仓库与利用脚本来验证思路、分析附件、枚举服务、复现实验和提炼可复用命令。你的职责不是空手侦查，而是成为全桌最会用工具的人。",
+    tool_style="你是全桌的工具大师。每个 cycle 默认至少尝试 1~2 个现成工具、脚本或知识库路径，把关键结果浓缩成 fact/tool_output 供其他骑士复用。优先做可复现、可复制、可交接的工具链验证；拿不准时先实测工具是否真能执行。",
     preferred_tags=["tooling", "kali", "file", "meta", "strings", "enum", "fingerprint"],
 )
 

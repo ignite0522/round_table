@@ -13,6 +13,7 @@ from typing import Awaitable, Callable
 from ..core.board import Board
 from ..core.entry import BoardEntry, EntryStatus, EntryType
 
+
 @dataclass(slots=True)
 class VerificationResult:
     accepted: bool
@@ -101,7 +102,6 @@ class Arthur:
                 await self.board.set_status(entry.id, EntryStatus.REFUTED)
                 continue
 
-            # 有真验证器则真提交;否则仅凭格式通过(Phase 1)。
             verdict = VerificationResult(accepted=True)
             if self.verifier is not None:
                 verdict = self._normalize_verification(await self.verifier(flag))

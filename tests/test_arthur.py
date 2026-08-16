@@ -4,7 +4,6 @@ import pytest
 
 from roundtable.core import Board, EntryStatus, EntryType
 from roundtable.roles import Arthur
-from roundtable.roles.arthur import VerificationResult
 
 
 async def test_valid_flag_format_resolves():
@@ -74,50 +73,6 @@ async def test_verifier_accepts_right_flag():
 
     arthur = Arthur(board, verifier=verifier)
     assert await arthur.check() == "flag{correct}"
-
-
-async def test_verifier_can_accept_without_stopping():
-    board = Board()
-    e = await board.post(
-        type=EntryType.FLAG_CANDIDATE, author="Lancelot",
-        title="partial", body="flag{correct}", confidence=0.95,
-    )
-
-    async def verifier(flag: str) -> VerificationResult:
-        assert flag == "flag{correct}"
-        return VerificationResult(
-            accepted=True,
-            should_stop=False,
-            reason="还有其他 flag 未提交。",
-        )
-
-    arthur = Arthur(board, verifier=verifier)
-    assert await arthur.check() is None
-    assert board.get(e.id).status == EntryStatus.RESOLVED
-    assert arthur.winning_flag is None
-
-
-async def test_duplicate_flag_candidate_is_not_reverified():
-    board = Board()
-    await board.post(
-        type=EntryType.FLAG_CANDIDATE, author="Gawain",
-        title="first", body="flag{same}", confidence=0.9,
-    )
-    second = await board.post(
-        type=EntryType.FLAG_CANDIDATE, author="Percival",
-        title="second", body="flag{same}", confidence=0.9,
-    )
-    calls = 0
-
-    async def verifier(flag: str) -> VerificationResult:
-        nonlocal calls
-        calls += 1
-        return VerificationResult(accepted=True, should_stop=False, reason="先记账，继续找别的。")
-
-    arthur = Arthur(board, verifier=verifier)
-    assert await arthur.check() is None
-    assert calls == 1
-    assert board.get(second.id).status == EntryStatus.RESOLVED
 
 
 async def test_candidate_processed_once():

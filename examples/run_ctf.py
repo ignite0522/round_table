@@ -173,6 +173,7 @@ def parse_args(argv: list[str] | None = None):
     p.add_argument("--keep-benchmark-open", action="store_true", help="跑完后不自动 close challenge")
     p.add_argument("--max-cycles", type=int, default=20)
     p.add_argument("--time-budget-min", type=float, default=240.0, help="时间预算(分钟),默认 4 小时")
+    p.add_argument("--result-json", default=None, help="若提供，则将本次 meeting 结果写入该 JSON 文件")
     p.add_argument("--no-sandbox", action="store_true")
     p.add_argument("--allow-domain", action="append", default=[],
                    help="沙箱网络白名单域名,可多次;不给则放行全部网络。题目 host 会自动加入")
@@ -240,6 +241,37 @@ def _guess_url_from_addr(addrs: list[str]) -> str | None:
     if port in {"80", "8000", "8080", "5000", "3000", "8888"}:
         return f"http://{addr}/"
     return None
+
+
+def _is_capacity_conflict(error: BenchmarkAPIError) -> bool:
+    if error.status != 409:
+        return False
+    return "max active challenge instances reached" in str(error).lower()
+
+
+async def _start_benchmark_challenge_with_retry(
+    client: BenchmarkClient,
+    unique_code: str,
+    *,
+    wait_s: float = 3.0,
+) -> list[str]:
+    while True:
+        try:
+            return await asyncio.to_thread(client.start_challenge, unique_code)
+        except BenchmarkAPIError as e:
+            if not _is_capacity_conflict(e):
+                raise
+            active_items = await asyncio.to_thread(client.list_active_challenges)
+            active_desc = ", ".join(
+                f"{item.unique_code}:{item.container_status}"
+                for item in active_items
+            ) or "(empty)"
+            print(
+                f"   [TSecBench] start {unique_code} 命中平台活跃靶场上限，"
+                f"{wait_s:.0f}s 后重试。当前活跃: {active_desc}",
+                flush=True,
+            )
+            await asyncio.sleep(wait_s)
 
 
 def _build_problem_from_benchmark(
@@ -345,7 +377,10 @@ async def main():
         )
         benchmark_unique_code = a.benchmark_unique_code
         challenge = benchmark_client.get_challenge(benchmark_unique_code)
-        addrs = benchmark_client.start_challenge(benchmark_unique_code)
+        addrs = await _start_benchmark_challenge_with_retry(
+            benchmark_client,
+            benchmark_unique_code,
+        )
         benchmark_started = True
         downloaded_attachments = await asyncio.to_thread(
             _download_benchmark_attachments,
@@ -491,6 +526,27 @@ async def main():
     for e in board.all():
         tag = f" #{' #'.join(e.tags)}" if e.tags else ""
         print(f"  [{e.id}] {e.type.value:14s} {e.author:9s} (+{e.endorse_count}/-{e.challenge_count}) {e.title}{tag}")
+
+    if a.result_json:
+        result_path = Path(a.result_json)
+        result_path.parent.mkdir(parents=True, exist_ok=True)
+        result_path.write_text(
+            json.dumps(
+                {
+                    "solved": result.solved,
+                    "flag": result.flag,
+                    "reason": result.reason,
+                    "cycles": result.cycles,
+                    "elapsed": result.elapsed,
+                    "board_size": result.board_size,
+                    "benchmark_unique_code": benchmark_unique_code,
+                    "title": problem.title,
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
 
 
 if __name__ == "__main__":

@@ -84,6 +84,8 @@ def load_benchmark_config(
 
 
 class BenchmarkClient:
+    ACTIVE_CONTAINER_STATUSES = frozenset({"pending", "available", "stop_pending"})
+
     def __init__(self, base_url: str, token: str, *, timeout_s: float = DEFAULT_TIMEOUT_S):
         if not base_url or not token:
             raise ValueError("benchmark base_url/token 不能为空")
@@ -138,10 +140,22 @@ class BenchmarkClient:
             raise BenchmarkAPIError(message, status=e.code, code=code, detail=detail) from e
         except URLError as e:
             raise BenchmarkAPIError(f"网络错误: {e.reason}") from e
+        except Exception as e:
+            raise BenchmarkAPIError(f"请求失败: {type(e).__name__}: {e}") from e
 
     def list_challenges(self) -> list[ChallengeInfo]:
         payload = self._request("GET", "/openapi/v1/challenges")
         return [ChallengeInfo.from_json(item) for item in payload or []]
+
+    def list_active_challenges(self) -> list[ChallengeInfo]:
+        return [
+            item
+            for item in self.list_challenges()
+            if item.container_status in self.ACTIVE_CONTAINER_STATUSES
+        ]
+
+    def count_active_challenges(self) -> int:
+        return len(self.list_active_challenges())
 
     def get_challenge(self, unique_code: str) -> ChallengeInfo:
         for item in self.list_challenges():
