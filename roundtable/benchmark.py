@@ -187,12 +187,17 @@ class BenchmarkClient:
             )
         except BenchmarkAPIError as e:
             if e.code == "duplicate":
+                challenge = None
+                try:
+                    challenge = self.get_challenge(unique_code)
+                except Exception:
+                    challenge = None
                 return SubmitResult(
                     correct=True,
                     awarded=0,
                     cumulative_score=0,
-                    correct_flag_count=0,
-                    total_flag_count=0,
+                    correct_flag_count=int(getattr(challenge, "correct_flag_count", 0) or 0),
+                    total_flag_count=int(getattr(challenge, "flag_count", 0) or 0),
                     matched_flag_index=None,
                     duplicate=True,
                 )

@@ -757,6 +757,67 @@ class CodexKnight(Knight):
         ops = data.get("operations", [])
         return ops if isinstance(ops, list) else []
 
+    def _extract_flag(self, text: str | None) -> str | None:
+        if not text:
+            return None
+        match = re.search(r"[A-Za-z0-9_]+\{[^}\n]*\}", text)
+        return match.group(0) if match else None
+
+    def _record_local_flag(self, flag: str, *, title: str, body: str) -> None:
+        if not self.cwd or not flag:
+            return
+        cwd_path = Path(self.cwd)
+        cwd_path.mkdir(parents=True, exist_ok=True)
+        md_path = cwd_path / "FLAGS_FOUND.md"
+        jsonl_path = cwd_path / "FLAGS_FOUND.jsonl"
+
+        existing = ""
+        if md_path.exists():
+            try:
+                existing = md_path.read_text(encoding="utf-8")
+            except OSError:
+                existing = ""
+        if flag not in existing:
+            with md_path.open("a", encoding="utf-8") as fh:
+                if not existing:
+                    fh.write(f"# {self.name} found flags\n")
+                fh.write(f"- {flag}\n")
+                if title:
+                    fh.write(f"  - title: {title}\n")
+                if body:
+                    summary = " ".join(body.strip().splitlines())
+                    fh.write(f"  - note: {summary[:240]}\n")
+
+        existing_flags: set[str] = set()
+        if jsonl_path.exists():
+            try:
+                for line in jsonl_path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        item = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    existing_flag = str(item.get("flag") or "").strip()
+                    if existing_flag:
+                        existing_flags.add(existing_flag)
+            except OSError:
+                existing_flags = set()
+        if flag not in existing_flags:
+            with jsonl_path.open("a", encoding="utf-8") as fh:
+                fh.write(
+                    json.dumps(
+                        {
+                            "flag": flag,
+                            "title": title,
+                            "body": body,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
+
     async def _apply_operations(self, ops: list[dict[str, Any]]) -> int:
         n_posts = 0
         for op in ops:
@@ -767,10 +828,16 @@ class CodexKnight(Knight):
                 except (TypeError, ValueError):
                     confidence = 0.5
                 confidence = max(0.0, min(1.0, confidence))
+                entry_type = str(op.get("type", EntryType.FACT.value))
+                title = str(op.get("title", "")).strip()[:240] or "(untitled)"
+                body = str(op.get("body", ""))
+                flag = self._extract_flag(title) or self._extract_flag(body)
+                if entry_type == EntryType.FLAG_CANDIDATE.value and flag:
+                    self._record_local_flag(flag, title=title, body=body)
                 await self.tools.post_entry(
-                    type=op.get("type", EntryType.FACT.value),
-                    title=str(op.get("title", "")).strip()[:240] or "(untitled)",
-                    body=str(op.get("body", "")),
+                    type=entry_type,
+                    title=title,
+                    body=body,
                     confidence=confidence,
                     refs=self._string_list(op.get("refs")),
                     tags=self._string_list(op.get("tags")),

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -28,7 +29,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from roundtable.assemble import assemble_codex
 from roundtable.benchmark import BenchmarkAPIError, BenchmarkClient, load_benchmark_config
 from roundtable.roles import Problem
-from roundtable.roles.arthur import DEFAULT_FLAG_REGEX
+from roundtable.roles.arthur import DEFAULT_FLAG_REGEX, VerificationResult
 
 ROUND_TABLE_MODEL = "gpt-5.4"
 
@@ -297,10 +298,39 @@ def prepare_board_file(cwd: str, *, resume_board: bool) -> Path:
     return board_path
 
 
+def _load_submitted_flag_cache(path: Path) -> dict[str, dict]:
+    cache: dict[str, dict] = {}
+    if not path.exists():
+        return cache
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            flag = str(item.get("flag") or "").strip()
+            if flag:
+                cache[flag] = item
+    except OSError:
+        return {}
+    return cache
+
+
+def _append_submitted_flag_cache(path: Path, item: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(item, ensure_ascii=False) + "\n")
+
+
 async def main():
     a = parse_args()
     workdir = prepare_workdir(a.cwd, resume_board=a.resume_board)
     board_path = prepare_board_file(str(workdir), resume_board=a.resume_board)
+    submitted_flags_path = workdir / "_submitted_flags.jsonl"
+    submitted_flags = _load_submitted_flag_cache(submitted_flags_path)
     downloaded_attachments: list[str] = []
     verifier = None
     benchmark_client = None
@@ -331,7 +361,30 @@ async def main():
         )
         problem.attachments = downloaded_attachments
 
-        async def _verify(flag: str) -> bool:
+        async def _verify(flag: str) -> bool | VerificationResult:
+            cached = submitted_flags.get(flag)
+            if cached is not None:
+                correct = bool(cached.get("correct"))
+                complete = bool(cached.get("complete"))
+                correct_count = int(cached.get("correct_flag_count") or 0)
+                total_count = int(cached.get("total_flag_count") or 0)
+                count_text = f" [{correct_count}/{total_count}]" if total_count else ""
+                print(
+                    f"   [TSecBench] skip duplicate(local-cache){count_text}: {flag}",
+                    flush=True,
+                )
+                if correct:
+                    return VerificationResult(
+                        accepted=True,
+                        should_stop=complete,
+                        reason="该 flag 之前已提交过，本次跳过重复提交。",
+                    )
+                return VerificationResult(
+                    accepted=False,
+                    should_stop=False,
+                    reason="该 flag 之前已提交过且未通过，本次跳过重复提交。",
+                )
+
             result = await asyncio.to_thread(
                 benchmark_client.submit_flag,
                 benchmark_unique_code,
@@ -339,12 +392,47 @@ async def main():
             )
             award_text = f", +{result.awarded} 分" if result.awarded else ""
             duplicate_text = " (duplicate)" if result.duplicate else ""
+            count_text = (
+                f" [{result.correct_flag_count}/{result.total_flag_count}]"
+                if result.total_flag_count
+                else ""
+            )
             print(
                 "   [TSecBench] submit "
-                f"{'correct' if result.correct else 'wrong'}{award_text}{duplicate_text}",
+                f"{'correct' if result.correct else 'wrong'}{award_text}{duplicate_text}{count_text}",
                 flush=True,
             )
-            return result.correct
+            complete = bool(
+                result.correct
+                and result.total_flag_count
+                and result.correct_flag_count >= result.total_flag_count
+            )
+            record = {
+                "flag": flag,
+                "correct": bool(result.correct),
+                "duplicate": bool(result.duplicate),
+                "awarded": int(result.awarded),
+                "correct_flag_count": int(result.correct_flag_count),
+                "total_flag_count": int(result.total_flag_count),
+                "complete": complete,
+            }
+            submitted_flags[flag] = record
+            _append_submitted_flag_cache(submitted_flags_path, record)
+            if result.correct:
+                return VerificationResult(
+                    accepted=True,
+                    should_stop=complete,
+                    reason=(
+                        "该 flag 已验证正确，且本题 flag 已全部提交完成。"
+                        if complete
+                        else "该 flag 已验证正确，但本题还有其他 flag 未提交。"
+                    ),
+                )
+            return VerificationResult(
+                accepted=False,
+                should_stop=False,
+                reason=f"提交验证未通过:{flag}",
+            )
 
         verifier = _verify
     else:
