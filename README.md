@@ -128,53 +128,83 @@ tests/              单元与集成测试
 
 ## 安装
 
-运行前需要准备 Python 3.11+、Docker Desktop，以及已经登录的 Codex CLI 配置。构建脚本会创建包含 Codex、Kali 工具与知识库的共享 worker 镜像。
+当前版本默认通过 Docker 运行。你需要准备：
 
-### 1. 克隆仓库并安装 Python 依赖
+- Docker Desktop
+- 已登录的 Codex / Claude Code 配置
+- 若用于托管评测，还需要 DeepSeek API Key
+
+### 1. 克隆仓库
 
 ```bash
 git clone https://github.com/ignite0522/round_table.git
 cd round_table
-pip install -r requirements.txt
 ```
 
-### 2. 构建共享 Kali Worker
+### 2. 构建本地控制台镜像
 
 ```bash
-./scripts/build_roundtable_kali.sh
+./scripts/build_roundtable_standalone.sh
+```
+
+### 3. 如需托管评测，构建 hosted 镜像
+
+```bash
+./scripts/build_roundtable_hosted.sh
 ```
 
 ## 快速启动
 
-### 启动本地 GUI
+### 启动本地控制台（Docker）
 
 ```bash
-python -m gui.app
+./scripts/run_roundtable_standalone.sh
 ```
 
-然后打开 [http://127.0.0.1:5055](http://127.0.0.1:5055)。
+默认会：
 
-### 命令行运行单题
+- 启动 `roundtable-standalone:latest`
+- 将本机 `~/.codex` 只读挂载进容器
+- 将仓库下 `round_table_work/` 挂到容器里持久化日志和任务数据
+- 对外暴露 [http://127.0.0.1:5055](http://127.0.0.1:5055)
+
+如需改端口，可在启动前设置：
 
 ```bash
-python -m examples.run_ctf \
-  "http://target.example/" \
-  --cwd ./round_table_work/demo \
-  --docker-image roundtable-kali:latest \
-  --no-sandbox
+export ROUNDTABLE_STANDALONE_PORT=5056
+./scripts/run_roundtable_standalone.sh
 ```
 
-### 命令行运行 benchmark
+### 容器内命令行运行单题
+
+如果你想直接进入容器后手动运行单题或 benchmark，可以先启动一个交互 shell：
+
+```bash
+docker run --rm -it \
+  -v "$HOME/.codex:/root/.codex:ro" \
+  -v "$PWD/round_table_work:/app/round_table_work" \
+  roundtable-standalone:latest \
+  bash
+```
+
+进入容器后再运行：
 
 ```bash
 python -m examples.run_benchmark \
-  --cwd ./round_table_work/benchmark-runs \
-  --docker-image roundtable-kali:latest \
+  --cwd /app/round_table_work/benchmark-runs \
   --no-sandbox
+```
+
+### 托管评测镜像导出
+
+构建完 `roundtable-hosted:latest` 之后，可以导出上传包：
+
+```bash
+./scripts/export_roundtable_hosted.sh
 ```
 
 ## 运行说明
 
 - 每道题都会生成独立工作目录，保存日志、黑板、附件与骑士笔记。
-- 多位骑士可以共享同一个 Kali worker，但使用各自独立的工作目录。
+- 本地控制台通过单个 Docker 容器承载 GUI 与调度逻辑。
 - GUI 支持运行中追加人工指令，由系统按最高优先级下发。
