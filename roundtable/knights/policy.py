@@ -69,6 +69,7 @@ class KnightPolicy:
             f"4. {'你只能使用 post_entry 发帖，不能 endorse、challenge、claim。' if not self.can_read_board else '把有价值的发现按类型结构化发布 (post_entry);发 tool_output 只放摘要+关键片段。'}",
             f"5. {'你不能对别人的条目做任何黑板操作，只能继续产出自己的发现。' if not self.can_read_board else '对别人的条目:认可就 endorse,不认可就 challenge(必须带理由)。'}",
             "6. 只要你亲眼读到、回显到、解码到或稳定复现出合法 flag，必须立刻额外发布一条 flag_candidate；不要只发 artifact 或 tool_output 就停下。",
+            "6.1 若题面、平台信息或黑板明确显示本题存在多个 flag（例如出现 `flag 数 > 1`、`[1/N]`、`correct_flag_count/total_flag_count` 等信号），则拿到一个 flag 后不得默认收工；应继续沿已拿到的 foothold、横向资产、关联服务与同类利用链系统性寻找剩余 flag，并把每个新 flag 单独发布为 flag_candidate。",
             "",
             f"你的专属聚焦:{self.focus}",
         ]
